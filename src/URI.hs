@@ -244,7 +244,7 @@ newtype RelSegment   = RelSegment   { unRelSegment :: String }
                        deriving (Show, Eq, Ord)
 newtype AbsPath      = AbsPath      { unAbsPath :: PathSegments }
                        deriving (Show, Eq, Ord)
-data    NetPath      = NetPath      (Maybe Authority) (Maybe AbsPath)
+data    NetPath      = NetPath      Authority (Maybe AbsPath)
                        deriving (Show, Eq, Ord)
 data    RelPath      = RelPath      RelSegment (Maybe AbsPath)
                        deriving (Show, Eq, Ord)
@@ -286,10 +286,20 @@ sParam        = unParam     .$. sMany sPChar
 
 -- segment       = *pchar *( ";" param )
 
+-- seg 4.3
+-- -------
+-- Although the BNF defines what is allowed in each component, it is
+-- ambiguous in terms of differentiating between an authority component
+-- and a path component that begins with two slash characters.  The
+-- greedy algorithm is used for disambiguation: the left-most matching
+-- rule soaks up as much of the URI reference string as it is capable of
+-- matching.  In other words, the authority component wins.
+
 pSegment      :: Parser Segment
-pSegment      = go          <$> pMany pPChar
-                            <*> pMany (pSym ';' *> pParam)
-                            <?> "segment"
+pSegment      = flip micro 1
+                $ go          <$> pMany pPChar
+                              <*> pMany (pSym ';' *> pParam)
+                              <?> "segment"
   where go a b = Segment (a, b)
 
 sSegment      :: Printer Segment
@@ -434,8 +444,12 @@ sRegName      = unRegName   .$. sSome (    sUnreserved
 
 -- authority     = server | reg_name
 
+-- A small penalty is given for the reg_name section since if the
+-- authority parses as a genuine server name, that's preferable over
+-- an opaque registry name.
+
 pAuthority    :: Parser Authority
-pAuthority    = Authority   <$> pEither pServer pRegName
+pAuthority    = Authority   <$> pEither pServer (micro pRegName 1)
 
 sAuthority    :: Printer Authority
 sAuthority    = unAuthority .$. sEither sServer sRegName
@@ -482,15 +496,14 @@ sAbsPath      = unAbsPath   .$. (sJust '/' *. sPathSegments)
 -- net_path      = "//" authority [ abs_path ]
 
 pNetPath      :: Parser NetPath
-pNetPath      = NetPath     <$  pString "//"
-                            <*> pMaybe pAuthority
+pNetPath      = NetPath     <$> (pString "//" *> pAuthority)
                             <*> pMaybe pAbsPath
 
 sNetPath      :: Printer NetPath
 sNetPath      = go          .$. sText "//"
-                             *. sMaybe sAuthority
+                             *. sAuthority
                             .*. sMaybe sAbsPath
-  where go :: NetPath -> (Maybe Authority, Maybe AbsPath)
+  where go :: NetPath -> (Authority, Maybe AbsPath)
         go (NetPath ma mabs) = (ma, mabs)
 
 -- rel_path      = rel_segment [ abs_path ]
