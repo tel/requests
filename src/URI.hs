@@ -5,11 +5,9 @@ module URI where
 
 import Text.ParserCombinators.UU
 import Text.ParserCombinators.UU.BasicInstances
-import Text.ParserCombinators.UU.Idioms
 
 import Hex
 import Data.Char
-import qualified Data.List.NonEmpty as Ne
 import           Data.List.NonEmpty (NonEmpty (..))
 
 -- $combinators
