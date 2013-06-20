@@ -1,7 +1,31 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TupleSections #-}
-
+-- |
+-- Module      : URI
+-- Copyright   : (c) Joseph Abrahamson 2013
+-- License     : MIT
+-- 
+-- Maintainer  : me@jspha.com
+-- Stability   : experimental
+-- Portability : non-portable
+-- 
+-- Printer/Parsers for URIs following RFC 2396. Loosely inspired by
+-- Rendel 2010 and Kennedy 2004. The goal should be to have printer
+-- parser pairs on URIs such that parsing is a left identity of
+-- printing. This is a useful property for servers, clients, and
+-- proxies, but also allows for lens-like access to complex types
+-- (e.g. the raw URI types like 'AbsoluteURI') via less complex types
+-- (like strings) which observe a partial isomorphism with the target
+-- type. The current implementation strives to be a reference
+-- implementation following the RFC very closely---it can be optimized
+-- later.
+-- 
+-- Rendel, T., & Ostermann, K. (2010). Invertible syntax descriptions:
+--     unifying parsing and pretty printing, 45(11), 1–12.
+-- 
+-- Kennedy, A. J. (2004). Functional pearl pickler combinators. Journal
+--     of functional programming, 14(6), 727–739.
 module URI where
 
 import Prelude hiding (print)
@@ -236,11 +260,7 @@ data    RelativeURI  = RelativeURI  (Either3 NetPath AbsPath RelPath)
 data    AbsoluteURI  = AbsoluteURI  Scheme (Either HierPart OpaquePart)
                        deriving (Show, Eq, Ord)
 
-pQuery        :: Parser Query
-pQuery        = Query       <$> pMany pUriC  <?> "query string"
-
-sQuery        :: Printer Query
-sQuery        = unQuery     .$. sMany sUriC
+-- fragment      = *uric
 
 pFragment     :: Parser Fragment
 pFragment     = Fragment    <$> pMany pUriC  <?> "fragment"
@@ -248,11 +268,23 @@ pFragment     = Fragment    <$> pMany pUriC  <?> "fragment"
 sFragment     :: Printer Fragment
 sFragment     = unFragment  .$. sMany sUriC
 
+-- query         = *uric
+
+pQuery        :: Parser Query
+pQuery        = Query       <$> pMany pUriC  <?> "query string"
+
+sQuery        :: Printer Query
+sQuery        = unQuery     .$. sMany sUriC
+
+-- param         = *pchar
+
 pParam        :: Parser Param
 pParam        = Param       <$> pMany pPChar <?> "parameter"
 
 sParam        :: Printer Param
 sParam        = unParam     .$. sMany sPChar
+
+-- segment       = *pchar *( ";" param )
 
 pSegment      :: Parser Segment
 pSegment      = go          <$> pMany pPChar
@@ -263,6 +295,8 @@ pSegment      = go          <$> pMany pPChar
 sSegment      :: Printer Segment
 sSegment      = unSegment   .$. sMany sPChar
                             .*. sMany (sJust ';' *. sParam)
+
+-- path_segments = segment *( "/" segment )
 
 pPathSegments :: Parser PathSegments
 pPathSegments = go          <$> pSegment
@@ -277,6 +311,8 @@ sPathSegments = unPS        .$. sSegment
   where unPS :: PathSegments -> (Segment, [Segment])
         unPS = unconsNE . unPathSegments
 
+-- port          = *digit
+
 pPort         :: Parser Port
 pPort         = go          <$> pMany pDigit
   where go :: String -> Port
@@ -284,6 +320,8 @@ pPort         = go          <$> pMany pDigit
 
 sPort         :: Printer Port
 sPort         = show.unPort .$. sMany sDigit
+
+-- IPv4address   = 1*digit "." 1*digit "." 1*digit "." 1*digit
 
 pIPv4Address  :: Parser IPv4Address
 pIPv4Address  = go          <$> pSome pDigit
@@ -301,6 +339,10 @@ sIPv4Address  = go          .$. sMany sDigit
                             .*. (sJust '.' *. sMany sDigit)
   where go :: IPv4Address -> (String, (String, (String, String)))
         go (IPv4Address (a,b,c,d)) = (show a, (show b, (show c, show d)))
+
+-- hostname      = *( domainlabel "." ) toplabel [ "." ]
+-- domainlabel   = alphanum | alphanum *( alphanum | "-" ) alphanum
+-- toplabel      = alpha | alpha *( alphanum | "-" ) alphanum
 
 pHostName     :: Parser HostName
 pHostName     = HostName    <$> pList_ng (pBit pAlpha <* pSym '.')
@@ -334,11 +376,15 @@ sHostName     = go          .$. sMany (sBit sAlpha .* sJust '.')
         sBit :: Printer Char -> Printer String
         sBit _ = sMany (sAlphaNum .|. sSym '-')
 
+-- host          = hostname | IPv4address
+
 pHost         :: Parser Host
 pHost         = Host        <$> pEither pHostName pIPv4Address
 
 sHost         :: Printer Host
 sHost         = unHost      .$. sEither sHostName sIPv4Address
+
+-- hostport      = host [ ":" port ]
 
 pHostPort     :: Parser HostPort
 pHostPort     = HostPort    <$> pHost <*> pMaybe (pSym  ':' *> pPort)
@@ -347,6 +393,9 @@ sHostPort     :: Printer HostPort
 sHostPort     = go          .$. sHost .*. sMaybe (sJust ':' *. sPort)
   where go :: HostPort -> (Host, Maybe Port)
         go (HostPort h mp) = (h, mp)
+
+--  userinfo      = *( unreserved | escaped |
+--                     ";" | ":" | "&" | "=" | "+" | "$" | "," )
 
 pUserInfo     :: Parser UserInfo
 pUserInfo     = UserInfo    <$> pMany (    pUnreserved
@@ -358,6 +407,8 @@ sUserInfo     = unUserInfo  .$. sMany (    sUnreserved
                                        .|. sAnyOf ";:&=+$,"
                                        .|. sEscaped )
 
+-- server        = [ [ userinfo "@" ] hostport ]
+
 pServer       :: Parser Server
 pServer       = Server      <$> pMaybe (pUserInfo <* pSym  '@')
                             <*> pHostPort
@@ -367,6 +418,9 @@ sServer       = go          .$. sMaybe (sUserInfo .* sJust '@')
                             .*. sHostPort
   where go :: Server -> (Maybe UserInfo, HostPort)
         go (Server mui hp) = (mui, hp)
+
+-- reg_name      = 1*( unreserved | escaped | "$" | "," |
+--                     ";" | ":" | "@" | "&" | "=" | "+" )
 
 pRegName      :: Parser RegName
 pRegName      = RegName     <$> pSome (    pUnreserved
@@ -378,11 +432,15 @@ sRegName      = unRegName   .$. sSome (    sUnreserved
                                        .|. sEscaped
                                        .|. sAnyOf "$,;:@&=+" )
 
+-- authority     = server | reg_name
+
 pAuthority    :: Parser Authority
 pAuthority    = Authority   <$> pEither pServer pRegName
 
 sAuthority    :: Printer Authority
 sAuthority    = unAuthority .$. sEither sServer sRegName
+
+-- scheme        = alpha *( alpha | digit | "+" | "-" | "." )
 
 pScheme       :: Parser Scheme
 pScheme       = go          <$> pAlpha
@@ -400,6 +458,9 @@ sScheme       = Printer go
           print (uncons .$. sAlpha
                         .*. sMany (sAlpha .|. sDigit .|. sAnyOf "+-.")) s
 
+-- rel_segment   = 1*( unreserved | escaped |
+--                     ";" | "@" | "&" | "=" | "+" | "$" | "," )
+
 pRelSegment   :: Parser RelSegment
 pRelSegment   = RelSegment  <$> pSome (    pUnreserved
                                        <|> pAnyOf ";@&=+$,"
@@ -410,11 +471,15 @@ sRelSegment   = unRelSegment .$. sSome (sUnreserved
                                         .|. sAnyOf ";@&=+$,"
                                         .|. sEscaped )
 
+-- abs_path      = "/"  path_segments
+
 pAbsPath      :: Parser AbsPath
 pAbsPath      = AbsPath     <$> (pSym '/' *> pPathSegments)
 
 sAbsPath      :: Printer AbsPath
 sAbsPath      = unAbsPath   .$. (sJust '/' *. sPathSegments)
+
+-- net_path      = "//" authority [ abs_path ]
 
 pNetPath      :: Parser NetPath
 pNetPath      = NetPath     <$  pString "//"
@@ -428,6 +493,8 @@ sNetPath      = go          .$. sText "//"
   where go :: NetPath -> (Maybe Authority, Maybe AbsPath)
         go (NetPath ma mabs) = (ma, mabs)
 
+-- rel_path      = rel_segment [ abs_path ]
+
 pRelPath      :: Parser RelPath
 pRelPath      = RelPath     <$> pRelSegment
                             <*> pMaybe pAbsPath
@@ -437,6 +504,8 @@ sRelPath      = go          .$. sRelSegment
                             .*. sMaybe sAbsPath
   where go :: RelPath -> (RelSegment, Maybe AbsPath)
         go (RelPath rs mabs) = (rs, mabs)
+
+-- opaque_part   = uric_no_slash *uric
 
 pOpaquePart   :: Parser OpaquePart
 pOpaquePart   = go          <$> (    pUnreserved
@@ -456,6 +525,8 @@ sOpaquePart   = Printer go
                         .*. sMany sUriC)
                 s
 
+-- hier_part     = ( net_path | abs_path ) [ "?" query ]
+
 pHierPart     :: Parser HierPart
 pHierPart     = HierPart    <$> pEither pNetPath pAbsPath
                             <*> pMaybe (pSym  '?' *> pQuery)
@@ -467,11 +538,15 @@ sHierPart     = go          .$. sEither sNetPath sAbsPath
               -> (Either NetPath AbsPath, Maybe Query)
         go (HierPart npap mayq) = (npap, mayq)
 
+-- path          = [ abs_path | opaque_part ]
+
 pPath         :: Parser Path
 pPath         = Path        <$> pEither pAbsPath pOpaquePart
 
 sPath         :: Printer Path
 sPath         = unPath      .$. sEither sAbsPath sOpaquePart
+
+-- relativeURI   = ( net_path | abs_path | rel_path ) [ "?" query ]
 
 pRelativeURI  :: Parser RelativeURI
 pRelativeURI  = RelativeURI <$> (    (Ei1 <$> pNetPath)
@@ -492,6 +567,7 @@ sRelativeURI  = go         .$. sEither3 sNetPath sAbsPath sRelPath
           go3 (Ei2 b) = print pb b
           go3 (Ei3 c) = print pc c
         
+-- absoluteURI   = scheme ":" ( hier_part | opaque_part )
 
 pAbsoluteURI  :: Parser AbsoluteURI
 pAbsoluteURI  = AbsoluteURI <$> ( pScheme <* pSym  ':' )
